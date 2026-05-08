@@ -3,12 +3,15 @@ import Redis from 'ioredis';
 const REDIS_URL = process.env.REDIS_URL ?? 'redis://localhost:6379';
 const KEY_PREFIX = process.env.REDIS_KEY_PREFIX ?? 'mosaic:';
 
+const tlsOptions = REDIS_URL.startsWith('rediss://') ? { tls: { rejectUnauthorized: false } } : {};
+
 // Main client for reads/writes
 export const redisClient = new Redis(REDIS_URL, {
   keyPrefix: KEY_PREFIX,
   maxRetriesPerRequest: 3,
   enableReadyCheck: false,
   lazyConnect: true,
+  ...tlsOptions,
 });
 
 redisClient.on('error', (err) => {
@@ -24,6 +27,7 @@ export const redisSubscriber = new Redis(REDIS_URL, {
   maxRetriesPerRequest: 3,
   enableReadyCheck: false,
   lazyConnect: true,
+  ...tlsOptions,
 });
 
 redisSubscriber.on('error', (err) => {
