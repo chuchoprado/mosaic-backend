@@ -92,18 +92,12 @@ async function buildServer() {
   server.get('/health', { logLevel: 'silent' }, async (_request, reply) => {
     const redisOk = await redisClient.ping().then(() => true).catch(() => false);
 
-    if (!redisOk) {
-      return reply.status(503).send({
-        status: 'degraded',
-        services: { redis: 'down' },
-      });
-    }
-
     return reply.send({
       status: 'ok',
       version: '1.0.0',
       environment: NODE_ENV,
       timestamp: new Date().toISOString(),
+      services: { redis: redisOk ? 'up' : 'degraded' },
     });
   });
 
@@ -173,8 +167,10 @@ async function main() {
   // Initialize external services
   initFirebase();
 
-  // Start Redis keyspace listener for session expiry events
-  await startRedisKeyspaceListener();
+  // Start Redis keyspace listener — non-fatal if Redis unavailable
+  await startRedisKeyspaceListener().catch((err) => {
+    console.warn('[Redis] Keyspace listener unavailable:', err.message);
+  });
 
   const server = await buildServer();
 

@@ -7,8 +7,8 @@ const KEY_PREFIX = process.env.REDIS_KEY_PREFIX ?? 'mosaic:';
 export const redisClient = new Redis(REDIS_URL, {
   keyPrefix: KEY_PREFIX,
   maxRetriesPerRequest: 3,
-  enableReadyCheck: true,
-  lazyConnect: false,
+  enableReadyCheck: false,
+  lazyConnect: true,
 });
 
 redisClient.on('error', (err) => {
@@ -21,10 +21,9 @@ redisClient.on('connect', () => {
 
 // Separate subscriber client (cannot be used for commands while subscribed)
 export const redisSubscriber = new Redis(REDIS_URL, {
-  // No keyPrefix on subscriber — keyspace notifications use raw keys
-  maxRetriesPerRequest: null, // allow infinite retries for subscriber
-  enableReadyCheck: true,
-  lazyConnect: false,
+  maxRetriesPerRequest: 3,
+  enableReadyCheck: false,
+  lazyConnect: true,
 });
 
 redisSubscriber.on('error', (err) => {
