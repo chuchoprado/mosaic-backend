@@ -9,11 +9,16 @@ export interface AuthenticatedUser {
   familyId: string;
   role: UserRole;
   email?: string;
-  // Agent-specific
   deviceId?: string;
 }
 
-// Extend Fastify request type to include user
+// Override @fastify/jwt's generic user type with our own
+declare module '@fastify/jwt' {
+  interface FastifyJWT {
+    user: AuthenticatedUser;
+  }
+}
+
 declare module 'fastify' {
   interface FastifyRequest {
     user: AuthenticatedUser;

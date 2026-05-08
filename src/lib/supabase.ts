@@ -16,9 +16,8 @@ export const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KE
   },
 });
 
-// Direct Postgres connection — only available when DATABASE_URL is set.
-// Falls back gracefully to supabaseAdmin for all operations in dev.
-export const sql = DATABASE_URL
+// Direct Postgres connection. Throws a clear error at startup if DATABASE_URL is missing.
+export const sql: ReturnType<typeof postgres> = DATABASE_URL
   ? postgres(DATABASE_URL, {
       max: 10,
       idle_timeout: 30,
@@ -32,4 +31,11 @@ export const sql = DATABASE_URL
         },
       },
     })
-  : null;
+  : new Proxy({} as ReturnType<typeof postgres>, {
+      get() {
+        throw new Error('DATABASE_URL is not set. Add it to .env to use direct SQL queries.');
+      },
+      apply() {
+        throw new Error('DATABASE_URL is not set. Add it to .env to use direct SQL queries.');
+      },
+    });
