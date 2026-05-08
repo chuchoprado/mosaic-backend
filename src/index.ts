@@ -57,9 +57,7 @@ async function buildServer() {
     global: true,
     max: parseInt(process.env.RATE_LIMIT_MAX ?? '100', 10),
     timeWindow: parseInt(process.env.RATE_LIMIT_WINDOW_MS ?? '60000', 10),
-    redis: redisClient,
     keyGenerator: (request) => {
-      // Rate limit by user ID if authenticated, else by IP
       const userId = (request as { userId?: string }).userId;
       return userId ?? request.ip;
     },
