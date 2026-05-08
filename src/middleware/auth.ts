@@ -230,7 +230,7 @@ export function issueAgentToken(params: {
     throw new Error('AGENT_JWT_PRIVATE_KEY not configured');
   }
 
-  const expiry = process.env.AGENT_JWT_EXPIRY ?? '30d';
+  const expiry = (process.env.AGENT_JWT_EXPIRY ?? '30d') as jwt.SignOptions['expiresIn'];
   const token = jwt.sign(
     {
       family_id: params.familyId,
@@ -239,7 +239,7 @@ export function issueAgentToken(params: {
     },
     AGENT_JWT_PRIVATE_KEY,
     {
-      algorithm: 'RS256',
+      algorithm: 'RS256' as jwt.Algorithm,
       subject:   params.agentUserId,
       expiresIn: expiry,
       issuer:    'mosaic-backend',
