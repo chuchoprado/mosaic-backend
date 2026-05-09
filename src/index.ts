@@ -45,10 +45,18 @@ async function buildServer() {
 
   // ── Plugins ────────────────────────────────────────────────
 
+  // Build allowed origins list from env + hardcoded Vercel deployments
+  const extraOrigins = (process.env.CORS_ORIGINS ?? '').split(',').map(s => s.trim()).filter(Boolean);
+  const prodOrigins = [
+    'https://app.mosaic.app',
+    'https://www.mosaic.app',
+    'https://mosaic-parent.vercel.app',
+    'https://mosaic-child.vercel.app',
+    ...extraOrigins,
+  ];
+
   await server.register(cors, {
-    origin: NODE_ENV === 'production'
-      ? ['https://app.mosaic.app', 'https://www.mosaic.app']
-      : true,
+    origin: NODE_ENV === 'production' ? prodOrigins : true,
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   });
