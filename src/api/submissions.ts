@@ -213,6 +213,124 @@ export async function submissionsRoutes(fastify: FastifyInstance): Promise<void>
     },
   );
 
+  // ── GET /submissions/stats ────────────────────────────────
+  // Returns balance, streak, and milestone data for a child.
+  // Child: always own stats. Parent: must supply ?childId=uuid
+  fastify.get(
+    '/stats',
+    { preHandler: [fastify.authenticate, fastify.requireUser] },
+    async (request: FastifyRequest, reply) => {
+      const { user } = request;
+      const query = request.query as { childId?: string };
+
+      const effectiveChildId = user.role === 'child'
+        ? user.id
+        : (query.childId ?? null);
+
+      if (!effectiveChildId) {
+        return reply.status(400).send({
+          error: { code: 'VALIDATION_ERROR', message: 'childId is required for parents' },
+        });
+      }
+
+      // Total minutes earned from approved approvals
+      const balanceRows = await sql<{ totalMinutes: number }[]>`
+        SELECT COALESCE(SUM(a.unlock_minutes_granted), 0)::INTEGER AS "totalMinutes"
+        FROM approvals a
+        JOIN task_submissions ts ON ts.id = a.submission_id
+        WHERE ts.child_id  = ${effectiveChildId}
+          AND ts.family_id = ${user.familyId}
+          AND a.approved   = TRUE
+      `;
+      const balanceMinutes = balanceRows[0]?.totalMinutes ?? 0;
+
+      // Total approved tasks ever
+      const totalApprovedRows = await sql<{ count: number }[]>`
+        SELECT COUNT(*)::INTEGER AS count
+        FROM approvals a
+        JOIN task_submissions ts ON ts.id = a.submission_id
+        WHERE ts.child_id  = ${effectiveChildId}
+          AND ts.family_id = ${user.familyId}
+          AND a.approved   = TRUE
+      `;
+      const totalApprovedTasks = totalApprovedRows[0]?.count ?? 0;
+
+      // Today's stats (UTC day)
+      const todayRows = await sql<{ approved: number }[]>`
+        SELECT COUNT(*)::INTEGER AS approved
+        FROM approvals a
+        JOIN task_submissions ts ON ts.id = a.submission_id
+        WHERE ts.child_id   = ${effectiveChildId}
+          AND ts.family_id  = ${user.familyId}
+          AND a.approved    = TRUE
+          AND ts.submitted_at >= date_trunc('day', NOW() AT TIME ZONE 'UTC')
+      `;
+      const todayApproved = todayRows[0]?.approved ?? 0;
+
+      const todayTotalRows = await sql<{ count: number }[]>`
+        SELECT COUNT(*)::INTEGER AS count
+        FROM tasks
+        WHERE child_id  = ${effectiveChildId}
+          AND family_id = ${user.familyId}
+          AND status    = 'active'
+      `;
+      const todayTotal = todayTotalRows[0]?.count ?? 0;
+
+      // Streak — distinct UTC days with ≥1 approved submission, working backwards from today
+      const streakDaysRows = await sql<{ day: string }[]>`
+        SELECT DISTINCT date_trunc('day', ts.submitted_at AT TIME ZONE 'UTC')::DATE::TEXT AS day
+        FROM approvals a
+        JOIN task_submissions ts ON ts.id = a.submission_id
+        WHERE ts.child_id  = ${effectiveChildId}
+          AND ts.family_id = ${user.familyId}
+          AND a.approved   = TRUE
+        ORDER BY day DESC
+        LIMIT 90
+      `;
+
+      let streak = 0;
+      const today = new Date();
+      today.setUTCHours(0, 0, 0, 0);
+      const daySet = new Set(streakDaysRows.map(r => r.day));
+
+      for (let i = 0; i <= 90; i++) {
+        const d = new Date(today.getTime() - i * 86400000);
+        const key = d.toISOString().slice(0, 10);
+        if (daySet.has(key)) {
+          streak++;
+        } else if (i === 0) {
+          // Today not completed yet — streak still counts from yesterday
+          continue;
+        } else {
+          break;
+        }
+      }
+
+      // Milestones
+      const milestones: string[] = [];
+      if (streak >= 3)  milestones.push('streak_3');
+      if (streak >= 7)  milestones.push('streak_7');
+      if (streak >= 14) milestones.push('streak_14');
+      if (streak >= 30) milestones.push('streak_30');
+      if (todayTotal > 0 && todayApproved >= todayTotal) milestones.push('perfect_day');
+      if (totalApprovedTasks >= 10)  milestones.push('tasks_10');
+      if (totalApprovedTasks >= 50)  milestones.push('tasks_50');
+      if (totalApprovedTasks >= 100) milestones.push('tasks_100');
+      if (balanceMinutes >= 60)   milestones.push('minutes_60');
+      if (balanceMinutes >= 300)  milestones.push('minutes_300');
+      if (balanceMinutes >= 600)  milestones.push('minutes_600');
+
+      return reply.send({
+        balanceMinutes,
+        streak,
+        todayApproved,
+        todayTotal,
+        totalApprovedTasks,
+        milestones,
+      });
+    },
+  );
+
   // ── GET /submissions ──────────────────────────────────────
   fastify.get(
     '/',
@@ -236,6 +354,8 @@ export async function submissionsRoutes(fastify: FastifyInstance): Promise<void>
         id: string;
         taskId: string;
         taskTitle: string;
+        taskIcon: string | null;
+        taskUnlockMinutes: number;
         childId: string;
         childName: string;
         status: string;
@@ -244,11 +364,15 @@ export async function submissionsRoutes(fastify: FastifyInstance): Promise<void>
         submittedAt: Date;
         expiresAt: Date;
         reviewedAt: Date | null;
+        unlockMinutesGranted: number | null;
+        approvalComment: string | null;
       }[]>`
         SELECT
           ts.id,
           ts.task_id,
-          t.title AS task_title,
+          t.title  AS task_title,
+          t.icon   AS task_icon,
+          t.unlock_minutes AS task_unlock_minutes,
           ts.child_id,
           u.display_name AS child_name,
           ts.status,
@@ -256,10 +380,13 @@ export async function submissionsRoutes(fastify: FastifyInstance): Promise<void>
           ts.evidence_photo_key,
           ts.submitted_at,
           ts.expires_at,
-          ts.reviewed_at
+          ts.reviewed_at,
+          a.unlock_minutes_granted,
+          a.comment AS approval_comment
         FROM task_submissions ts
         JOIN tasks t   ON t.id  = ts.task_id
         JOIN users u   ON u.id  = ts.child_id
+        LEFT JOIN approvals a ON a.submission_id = ts.id
         WHERE ts.family_id = ${user.familyId}
           ${effectiveChildId ? sql`AND ts.child_id = ${effectiveChildId}` : sql``}
           ${taskId  ? sql`AND ts.task_id = ${taskId}` : sql``}
@@ -270,17 +397,21 @@ export async function submissionsRoutes(fastify: FastifyInstance): Promise<void>
 
       return reply.send({
         submissions: submissions.map(s => ({
-          id:           s.id,
-          taskId:       s.taskId,
-          taskTitle:    s.taskTitle,
-          childId:      s.childId,
-          childName:    s.childName,
-          status:       s.status,
-          note:         s.note,
-          hasPhoto:     !!s.evidencePhotoKey,
-          submittedAt:  s.submittedAt.toISOString(),
-          expiresAt:    s.expiresAt.toISOString(),
-          reviewedAt:   s.reviewedAt?.toISOString() ?? null,
+          id:                   s.id,
+          taskId:               s.taskId,
+          taskTitle:            s.taskTitle,
+          taskEmoji:            s.taskIcon,
+          taskUnlockMinutes:    s.taskUnlockMinutes,
+          childId:              s.childId,
+          childName:            s.childName,
+          status:               s.status,
+          note:                 s.note,
+          hasPhoto:             !!s.evidencePhotoKey,
+          submittedAt:          s.submittedAt.toISOString(),
+          expiresAt:            s.expiresAt.toISOString(),
+          reviewedAt:           s.reviewedAt?.toISOString() ?? null,
+          unlockMinutesGranted: s.unlockMinutesGranted ?? null,
+          approvalComment:      s.approvalComment ?? null,
         })),
       });
     },
