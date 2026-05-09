@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import fp from 'fastify-plugin';
 import jwt from 'jsonwebtoken';
+import { supabaseAdmin } from '../lib/supabase.js';
 
 export type UserRole = 'parent' | 'child' | 'agent';
 
@@ -25,16 +26,43 @@ declare module 'fastify' {
   }
 }
 
-const SUPABASE_JWT_SECRET = process.env.SUPABASE_JWT_SECRET!;
 const AGENT_JWT_PUBLIC_KEY = process.env.AGENT_JWT_PUBLIC_KEY!;
+
+/**
+ * Verify a Supabase Auth token using the admin SDK — handles HS256 and ES256.
+ * Returns the authenticated user or throws on invalid token.
+ */
+async function verifySupabaseToken(token: string): Promise<AuthenticatedUser> {
+  const { data, error } = await supabaseAdmin.auth.getUser(token);
+  if (error || !data.user) {
+    throw new Error(error?.message ?? 'Invalid Supabase token');
+  }
+
+  const user = data.user;
+  const meta = user.app_metadata ?? {};
+
+  const role = meta.role as UserRole | undefined;
+  const familyId = meta.family_id as string | undefined;
+
+  if (!role || !familyId) {
+    throw new Error('Token missing role or family_id claims');
+  }
+
+  return {
+    id:      user.id,
+    familyId,
+    role,
+    email:   user.email,
+  };
+}
 
 /**
  * Decode and validate a JWT from the Authorization header.
  * Supports two token types:
- *   1. Supabase Auth tokens (HS256, for parent/child users)
+ *   1. Supabase Auth tokens (any alg — validated via Supabase Admin SDK)
  *   2. Agent tokens (RS256, issued by our API for the macOS daemon)
  */
-function verifyToken(token: string): AuthenticatedUser {
+async function verifyToken(token: string): Promise<AuthenticatedUser> {
   // Peek at the header to determine algorithm without verifying
   const decoded = jwt.decode(token, { complete: true });
   if (!decoded || typeof decoded === 'string') {
@@ -43,59 +71,28 @@ function verifyToken(token: string): AuthenticatedUser {
 
   const algorithm = decoded.header.alg;
 
-  if (algorithm === 'RS256') {
-    // Agent token — verify with our RS256 public key
-    if (!AGENT_JWT_PUBLIC_KEY) {
-      throw new Error('Agent JWT public key not configured');
+  if (algorithm === 'RS256' && AGENT_JWT_PUBLIC_KEY) {
+    // Try as agent token first — verify with our RS256 public key
+    try {
+      const payload = jwt.verify(token, AGENT_JWT_PUBLIC_KEY, {
+        algorithms: ['RS256'],
+      }) as jwt.JwtPayload;
+
+      if (payload.sub && payload.family_id && payload.device_id) {
+        return {
+          id:       payload.sub,
+          familyId: payload.family_id as string,
+          role:     'agent',
+          deviceId: payload.device_id as string,
+        };
+      }
+    } catch {
+      // Not a valid agent token — fall through to Supabase verification
     }
-
-    const payload = jwt.verify(token, AGENT_JWT_PUBLIC_KEY, {
-      algorithms: ['RS256'],
-    }) as jwt.JwtPayload;
-
-    if (!payload.sub || !payload.family_id || !payload.device_id) {
-      throw new Error('Agent token missing required claims');
-    }
-
-    return {
-      id:       payload.sub,
-      familyId: payload.family_id as string,
-      role:     'agent',
-      deviceId: payload.device_id as string,
-    };
   }
 
-  if (algorithm === 'HS256') {
-    // Supabase Auth token — verify with shared JWT secret
-    if (!SUPABASE_JWT_SECRET) {
-      throw new Error('Supabase JWT secret not configured');
-    }
-
-    const payload = jwt.verify(token, SUPABASE_JWT_SECRET, {
-      algorithms: ['HS256'],
-    }) as jwt.JwtPayload;
-
-    if (!payload.sub) {
-      throw new Error('Token missing sub claim');
-    }
-
-    // Supabase stores custom claims in `app_metadata` or at root level
-    const role = (payload.role ?? payload.app_metadata?.role) as UserRole | undefined;
-    const familyId = (payload.family_id ?? payload.app_metadata?.family_id) as string | undefined;
-
-    if (!role || !familyId) {
-      throw new Error('Token missing role or family_id claims');
-    }
-
-    return {
-      id:      payload.sub,
-      familyId,
-      role,
-      email:   payload.email as string | undefined,
-    };
-  }
-
-  throw new Error(`Unsupported JWT algorithm: ${algorithm}`);
+  // All other tokens: verify via Supabase Admin SDK (supports HS256 + ES256)
+  return verifySupabaseToken(token);
 }
 
 // ── Fastify hooks ──────────────────────────────────────────────────────────────
@@ -117,7 +114,7 @@ async function authMiddlewarePlugin(fastify: FastifyInstance): Promise<void> {
 
       const token = authHeader.slice(7);
       try {
-        request.user = verifyToken(token);
+        request.user = await verifyToken(token);
       } catch (err) {
         return reply.status(401).send({
           error: {
