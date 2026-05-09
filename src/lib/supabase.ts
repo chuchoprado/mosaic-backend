@@ -22,7 +22,7 @@ export const sql: ReturnType<typeof postgres> = DATABASE_URL
       max: 10,
       idle_timeout: 30,
       connect_timeout: 10,
-      ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: true } : false,
+      ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
       onnotice: () => {},
       transform: {
         column: {
