@@ -40,6 +40,15 @@ export async function childrenRoutes(fastify: FastifyInstance): Promise<void> {
         ORDER BY display_name ASC
       `;
 
+      // Fetch family codes from Supabase auth metadata for all children in one call
+      const { data: authList } = await supabaseAdmin.auth.admin.listUsers({ perPage: 1000 });
+      const familyCodeMap: Record<string, string> = {};
+      for (const u of authList?.users ?? []) {
+        if (u.app_metadata?.role === 'child' && u.app_metadata?.family_code) {
+          familyCodeMap[u.id] = u.app_metadata.family_code as string;
+        }
+      }
+
       // Enrich with device info
       const enriched = await Promise.all(children.map(async (child) => {
         const devices = await sql<{
@@ -65,6 +74,7 @@ export async function childrenRoutes(fastify: FastifyInstance): Promise<void> {
           birthYear:   child.birthYear,
           avatarUrl:   child.avatarUrl,
           isActive:    child.isActive,
+          familyCode:  familyCodeMap[child.id] ?? null,
           devices:     devices.map(d => ({
             id:              d.id,
             deviceName:      d.deviceName,
