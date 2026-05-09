@@ -30,7 +30,7 @@ const RefreshSchema = z.object({
 });
 
 const ChildPinSchema = z.object({
-  familyCode: z.string().regex(/^MOSAIC-[A-Z0-9]{4}$/),
+  familyCode: z.string().min(1),
   pin:        z.string().regex(/^\d{4,6}$/),
 });
 
@@ -224,10 +224,85 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
         });
       }
 
-      // In a full implementation, family_code and hashed PIN would be stored.
-      // For MVP, this is a placeholder that returns 501.
-      return reply.status(501).send({
-        error: { code: 'NOT_IMPLEMENTED', message: 'Child PIN auth coming soon' },
+      const { familyCode, pin } = body.data;
+
+      // 1. Look up users (children) whose app_metadata.family_code matches
+      const { data: listData, error: listError } =
+        await supabaseAdmin.auth.admin.listUsers({ perPage: 1000 });
+
+      if (listError) {
+        return reply.status(500).send({
+          error: { code: 'SERVER_ERROR', message: 'Failed to look up family' },
+        });
+      }
+
+      const childUser = listData.users.find(
+        (u) =>
+          u.app_metadata?.role === 'child' &&
+          u.app_metadata?.family_code === familyCode,
+      );
+
+      if (!childUser) {
+        return reply.status(401).send({
+          error: { code: 'UNAUTHORIZED', message: 'Invalid family code or PIN' },
+        });
+      }
+
+      // 2. Verify PIN
+      const pinHash = childUser.app_metadata?.pin_hash as string | null | undefined;
+      if (!pinHash) {
+        return reply.status(401).send({
+          error: { code: 'UNAUTHORIZED', message: 'No PIN set for this child' },
+        });
+      }
+
+      const bcrypt = await import('bcryptjs');
+      const pinValid = await bcrypt.compare(pin, pinHash);
+      if (!pinValid) {
+        return reply.status(401).send({
+          error: { code: 'UNAUTHORIZED', message: 'Invalid family code or PIN' },
+        });
+      }
+
+      // 3. Create a session for the child using admin API
+      // Use signInWithPassword with a fresh temp password to get tokens
+      const tempPassword = `tmp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      await supabaseAdmin.auth.admin.updateUserById(childUser.id, {
+        password: tempPassword,
+      });
+
+      const { data: signInData, error: signInError } =
+        await supabaseAdmin.auth.signInWithPassword({
+          email:    childUser.email!,
+          password: tempPassword,
+        });
+
+      // Invalidate the temp password immediately (set a new random one)
+      const { randomBytes } = await import('crypto');
+      await supabaseAdmin.auth.admin.updateUserById(childUser.id, {
+        password: randomBytes(16).toString('hex'),
+      });
+
+      if (signInError || !signInData.session) {
+        return reply.status(500).send({
+          error: { code: 'SERVER_ERROR', message: 'Failed to create session' },
+        });
+      }
+
+      // 4. Fetch child profile from DB
+      const rows = await sql<{ id: string; displayName: string; birthYear: number }[]>`
+        SELECT id, display_name AS "displayName", birth_year AS "birthYear"
+        FROM users WHERE id = ${childUser.id} LIMIT 1
+      `;
+      const child = rows[0];
+
+      return reply.status(200).send({
+        child: child ?? { id: childUser.id, displayName: 'Child' },
+        session: {
+          accessToken:  signInData.session.access_token,
+          refreshToken: signInData.session.refresh_token,
+          expiresAt:    signInData.session.expires_at,
+        },
       });
     },
   );
