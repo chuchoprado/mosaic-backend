@@ -278,11 +278,6 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
           password: tempPassword,
         });
 
-      // Invalidate the temp password immediately (set a new random one)
-      await supabaseAdmin.auth.admin.updateUserById(childUser.id, {
-        password: randomBytes(16).toString('hex'),
-      });
-
       if (signInError || !signInData.session) {
         return reply.status(500).send({
           error: { code: 'SERVER_ERROR', message: 'Failed to create session' },
