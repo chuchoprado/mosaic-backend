@@ -10,6 +10,8 @@
 
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
+import { randomBytes } from 'crypto';
+import bcrypt from 'bcryptjs';
 import { supabaseAdmin, sql } from '../lib/supabase.js';
 
 const RegisterSchema = z.object({
@@ -256,7 +258,6 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
         });
       }
 
-      const bcrypt = await import('bcryptjs');
       const pinValid = await bcrypt.compare(pin, pinHash);
       if (!pinValid) {
         return reply.status(401).send({
@@ -278,7 +279,6 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
         });
 
       // Invalidate the temp password immediately (set a new random one)
-      const { randomBytes } = await import('crypto');
       await supabaseAdmin.auth.admin.updateUserById(childUser.id, {
         password: randomBytes(16).toString('hex'),
       });
