@@ -52,6 +52,9 @@ async function buildServer() {
     'https://www.mosaic.app',
     'https://mosaic-parent.vercel.app',
     'https://mosaic-child.vercel.app',
+    'https://parent-app-three.vercel.app',
+    'https://child-app-livid.vercel.app',
+    'https://mosaic-landing-tau.vercel.app',
     ...extraOrigins,
   ];
 
